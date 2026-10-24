@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Ant Grid Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root {
+            --bg-base: #050505;
+            --bg-canvas: #09090b;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --accent-glow: rgba(59, 130, 246, 0.5);
+            --ui-bg: rgba(15, 20, 25, 0.65);
+            --text-main: #f3f4f6;
+            --text-dim: #9ca3af;
+        }
+
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            overflow: hidden; background-color: var(--bg-base);
+            font-family: 'Inter', system-ui, sans-serif;
+            user-select: none; color: var(--text-main);
+        }
+
+        #app-container { width: 100%; height: 100%; position: relative; }
+
+        /* Canvas */
+        #canvas-container {
+            width: 100%; height: 100%; position: absolute; top: 0; left: 0;
+            background-color: var(--bg-canvas); z-index: 1; cursor: grab;
+        }
+        #canvas-container.painting { cursor: crosshair; }
+        #canvas-container:active:not(.painting) { cursor: grabbing; }
+        canvas { display: block; width: 100%; height: 100%; }
+
+        /* UI Window */
+        #ui-window {
+            position: absolute; top: 20px; left: 20px; width: 440px;
+            max-height: calc(100vh - 40px); display: flex; flex-direction: column;
+            z-index: 10; background: var(--ui-bg); backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 30px var(--accent-glow);
+            border-radius: 12px; transition: height 0.3s ease; overflow: hidden;
+        }
+        #ui-window.collapsed { height: 60px !important; }
+
+        #ui-header {
+            cursor: move; background: linear-gradient(to right, rgba(255,255,255,0.02), rgba(255,255,255,0.05));
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        /* Tabs */
+        .tab-btn {
+            padding: 8px 12px; text-transform: uppercase; font-size: 10px; font-weight: bold;
+            color: var(--text-dim); border-bottom: 2px solid transparent; cursor: pointer; transition: all 0.2s;
+        }
+        .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+        .tab-content { display: none; }
+        .tab-content.active { display: flex; flex-direction: column; gap: 12px; }
+
+        /* HUD & Tooltips */
+        #hud {
+            position: absolute; top: 20px; right: 20px; z-index: 5;
+            background: rgba(0,0,0,0.7); backdrop-filter: blur(5px);
+            padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);
+            font-family: monospace; font-size: 12px; color: #4ade80; text-align: right;
+            pointer-events: none;
+        }
+        #coord-tooltip {
+            position: absolute; z-index: 20; background: rgba(0,0,0,0.8);
+            color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-family: monospace;
+            pointer-events: none; border: 1px solid rgba(255,255,255,0.2); display: none;
+            transform: translate(15px, 15px);
+        }
+
+        /* Inputs & Controls */
+        .glass-card { background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.05); }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+        
+        input[type=range] { -webkit-appearance: none; width: 100%; background: transparent; }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none; height: 14px; width: 14px; border-radius: 50%;
+            background: var(--accent); cursor: pointer; margin-top: -5px;
+            box-shadow: 0 0 8px var(--accent-glow);
+        }
+        input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 4px; background: rgba(255, 255, 255, 0.1); border-radius: 2px; }
+        input[type="color"] { appearance: none; -webkit-appearance: none; border: none; background: transparent; padding: 0; cursor: pointer; }
+        input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+        input[type="color"]::-webkit-color-swatch { border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; }
+        .checkbox-wrapper input:checked + div { background-color: var(--accent); border-color: var(--accent); }
+        .checkbox-wrapper input:checked + div svg { display: block; }
+    </style>
+</head>
+<body>
+
+<div id="app-container">
+    <div id="canvas-container">
+        <canvas id="gridCanvas"></canvas>
+    </div>
+    
+    <div id="hud">
+        FPS: <span id="fps-val">0</span><br>
+        TPS: <span id="real-tps-val">0</span>
+    </div>
+    <div id="coord-tooltip">X: 0, Y: 0</div>
+
+    <div id="ui-window">
+        <div id="ui-header" class="p-4 flex items-center justify-between shrink-0">
+            <div class="flex items-center gap-3">
+                <div class="w-3 h-3 rounded-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.8)] animate-pulse"></div>
+                <h1 class="text-sm font-black tracking-widest uppercase">Grid Nexus</h1>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="shareURL()" class="text-xs bg-white/10 hover:bg-white/20 px-2 py-1 rounded border border-white/10" title="Share via URL">🔗 Share</button>
+                <button onclick="toggleCollapse()" class="text-gray-400 hover:text-white transition p-1">
+                    <svg class="w-5 h-5 transition-transform duration-300" id="collapse-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"></path></svg>
+                </button>
+            </div>
+        </div>
+        
+        <!-- Tab Headers -->
+        <div class="flex border-b border-white/10 px-2 bg-black/20 shrink-0">
+            <div class="tab-btn active" onclick="switchTab('tab-core')">Core</div>
+            <div class="tab-btn" onclick="switchTab('tab-sim')">Sim Rules</div>
+            <div class="tab-btn" onclick="switchTab('tab-tools')">Tools & Saves</div>
+        </div>
+
+        <div id="ui-content" class="flex-1 overflow-y-auto p-4">
+            
+            <!-- CORE TAB -->
+            <div id="tab-core" class="tab-content active">
+                <div class="flex gap-1 mb-2">
+                    <button id="btn-toggle" onclick="toggleSim()" class="flex-1 bg-blue-600 hover:bg-blue-500 transition py-2 rounded font-bold text-white uppercase text-xs tracking-widest shadow-[0_0_15px_rgba(59,130,246,0.5)]">
+                        Execute
+                    </button>
+                    <button onclick="stepSim()" class="bg-white/10 hover:bg-white/20 border border-white/10 py-2 px-3 rounded text-xs uppercase font-bold" title="Step forward 1 tick">Step 1</button>
+                    <button onclick="undoSim()" class="bg-white/10 hover:bg-white/20 border border-white/10 py-2 px-3 rounded text-xs uppercase font-bold" title="Undo 1 manual step">Undo</button>
+                    <button onclick="resetSim()" class="bg-red-500/20 hover:bg-red-500/40 border border-red-500/30 py-2 px-3 rounded text-xs uppercase text-red-300 font-bold">Purge</button>
+                </div>
+                
+                <div>
+                    <div class="flex justify-between text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">
+                        <span>Target TPS</span> <span id="speed-val" class="text-blue-400">100</span>
+                    </div>
+                    <input type="range" id="speed-slider" min="1" max="100000" value="100" oninput="updateSpeed(this.value)">
+                </div>
+
+                <div class="flex justify-between items-center bg-white/5 p-2 rounded border border-white/10 mt-2">
+                    <span class="text-xs text-gray-300">Camera Focus</span>
+                    <select id="camera-mode" onchange="setCameraMode(this.value)" class="bg-black/50 text-white text-xs border border-white/20 rounded p-1">
+                        <option value="free">Free Pan</option>
+                        <option value="center">Follow Center of Mass</option>
+                    </select>
+                </div>
+
+                <hr class="border-white/10 border-dashed my-2">
+
+                <div class="flex gap-2">
+                    <button onclick="addRandomAnt()" class="flex-1 bg-purple-600/20 hover:bg-purple-600/40 border border-purple-500/30 px-3 py-2 rounded font-bold text-purple-300 text-[10px] uppercase tracking-widest">+ Randomize Ant</button>
+                    <button onclick="addAnt('RL')" class="flex-1 bg-blue-600/20 hover:bg-blue-600/40 border border-blue-500/30 px-3 py-2 rounded font-bold text-blue-300 text-[10px] uppercase tracking-widest">+ Add Drone</button>
+                </div>
+
+                <div id="ants-container" class="space-y-3 mt-2 pb-2">
+                    <!-- Ants render here -->
+                </div>
+            </div>
+
+            <!-- SIM RULES TAB -->
+            <div id="tab-sim" class="tab-content">
+                <div class="glass-card p-3 rounded space-y-3">
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs">Torus Mode (Boundary Wrap)</span>
+                        <input type="checkbox" id="cb-torus" onchange="simState.torus = this.checked">
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-[10px] text-gray-400">Grid Size (if Torus)</span>
+                        <input type="number" value="200" onchange="simState.torusSize = parseInt(this.value)" class="w-16 bg-black/50 border border-white/10 rounded text-xs text-center text-white">
+                    </div>
+                    <hr class="border-white/10">
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs">Lifespan Limit</span>
+                        <input type="checkbox" onchange="simState.lifespanEnabled = this.checked">
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-[10px] text-gray-400">Max Ticks</span>
+                        <input type="number" value="5000" onchange="simState.lifespan = parseInt(this.value)" class="w-20 bg-black/50 border border-white/10 rounded text-xs text-center text-white">
+                    </div>
+                    <hr class="border-white/10">
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs">Ant Mitosis (Duplication)</span>
+                        <input type="checkbox" onchange="simState.mitosis = this.checked">
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-[10px] text-gray-400">Split every X ticks</span>
+                        <input type="number" value="1000" onchange="simState.mitosisRate = parseInt(this.value)" class="w-20 bg-black/50 border border-white/10 rounded text-xs text-center text-white">
+                    </div>
+                    <hr class="border-white/10">
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs">Cell Aging (Fade to BG)</span>
+                        <input type="checkbox" onchange="simState.cellAging = this.checked">
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs">Heatmap Overlay</span>
+                        <input type="checkbox" onchange="simState.heatmap = this.checked">
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs">Radial Symmetry Spawn (4x)</span>
+                        <input type="checkbox" id="cb-sym" onchange="simState.symmetry = this.checked">
+                    </div>
+                </div>
+            </div>
+
+            <!-- TOOLS & SAVES TAB -->
+            <div id="tab-tools" class="tab-content">
+                <div class="glass-card p-3 rounded space-y-3">
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs font-bold text-gray-300">Background Color</span>
+                        <input type="color" value="#09090b" onchange="updateBg(this.value)" class="w-6 h-6 rounded cursor-pointer">
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs font-bold text-gray-300">Ant Shape</span>
+                        <select onchange="simState.shape = this.value" class="bg-black/50 text-white text-xs border border-white/20 rounded p-1">
+                            <option value="drone">Drone</option>
+                            <option value="arrow">Arrow</option>
+                            <option value="orb">Orb</option>
+                            <option value="classic">Classic Pixel</option>
+                        </select>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs font-bold text-gray-300">Audio Blips</span>
+                        <input type="checkbox" onchange="toggleAudio(this.checked)">
+                    </div>
+                    
+                    <hr class="border-white/10">
+                    
+                    <div>
+                        <span class="text-xs font-bold text-gray-300 mb-1 block">Canvas Paint Mode</span>
+                        <select id="paint-mode" onchange="simState.paintMode = this.value; document.getElementById('canvas-container').classList.toggle('painting', this.value !== 'none')" class="w-full bg-black/50 text-white text-xs border border-white/20 rounded p-1.5">
+                            <option value="none">Pan Camera (Off)</option>
+                            <option value="cell">Paint Standard Cell</option>
+                            <option value="wall">Paint Wall (Obstacle)</option>
+                        </select>
+                    </div>
+
+                    <div class="flex justify-between items-center pt-2">
+                        <span class="text-xs font-bold text-gray-300">Portals (Wormholes)</span>
+                        <button onclick="placePortal()" class="bg-purple-600/30 border border-purple-500/30 text-[10px] px-2 py-1 rounded text-purple-200">Place Pair</button>
+                    </div>
+
+                    <hr class="border-white/10">
+                    
+                    <button onclick="zoomToFit()" class="w-full bg-white/10 hover:bg-white/20 border border-white/20 py-2 rounded text-xs uppercase font-bold text-gray-200">
+                        Zoom to Fit View
+                    </button>
+
+                    <div class="grid grid-cols-3 gap-1 pt-2">
+                        <div class="col-span-3 text-[10px] text-gray-400 uppercase text-center mb-1">Quick Saves</div>
+                        <button onclick="saveSlot(1)" class="bg-green-600/20 border border-green-500/30 text-[10px] py-1 rounded text-green-300">Save 1</button>
+                        <button onclick="saveSlot(2)" class="bg-green-600/20 border border-green-500/30 text-[10px] py-1 rounded text-green-300">Save 2</button>
+                        <button onclick="saveSlot(3)" class="bg-green-600/20 border border-green-500/30 text-[10px] py-1 rounded text-green-300">Save 3</button>
+                        
+                        <button onclick="loadSlot(1)" class="bg-blue-600/20 border border-blue-500/30 text-[10px] py-1 rounded text-blue-300">Load 1</button>
+                        <button onclick="loadSlot(2)" class="bg-blue-600/20 border border-blue-500/30 text-[10px] py-1 rounded text-blue-300">Load 2</button>
+                        <button onclick="loadSlot(3)" class="bg-blue-600/20 border border-blue-500/30 text-[10px] py-1 rounded text-blue-300">Load 3</button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<script>
+    /* --- Core Data & State --- */
+    const PALETTE = ['#09090b', '#3b82f6', '#ec4899', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4'];
+    const canvas = document.getElementById('gridCanvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    
+    let isRunning = false, animId, lastTime = 0, tickAcc = 0, antCounter = 0, currentTick = 0;
+    let audioCtx = null, lastAudio = 0;
+    let frameCount = 0, lastFpsTime = 0, tickCountFrame = 0;
+    
+    const simState = {
+        speed: 100, pan: {x: 0, y: 0}, zoom: 1.5, cellSize: 15,
+        grid: new Map(), // 'x,y' -> {s: state, c: hex, t: tick, v: visits, w: isWall}
+        ants: [], portals: [],
+        history: [], // Ring buffer for undo
+        torus: false, torusSize: 200,
+        lifespanEnabled: false, lifespan: 5000,
+        mitosis: false, mitosisRate: 1000, maxAnts: 200,
+        cellAging: false, heatmap: false, symmetry: false,
+        shape: 'drone', paintMode: 'none', cameraMode: 'free'
+    };
+
+    /* --- Initialization --- */
+    function init() {
+        resize(); window.addEventListener('resize', resize);
+        simState.pan.x = canvas.width / 2; simState.pan.y = canvas.height / 2;
+        setupEvents();
+        
+        if(window.location.hash.length > 5) loadFromURL();
+        else addAnt('RL');
+        
+        requestAnimationFrame(loop);
+    }
+    function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+
+    /* --- UI Functions --- */
+    function switchTab(tabId) {
+        document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+        event.target.classList.add('active');
+        document.getElementById(tabId).classList.add('active');
+    }
+    
+    function toggleCollapse() {
+        const win = document.getElementById('ui-window');
+        const icon = document.getElementById('collapse-icon');
+        win.classList.toggle('collapsed');
+        icon.style.transform = win.classList.contains('collapsed') ? 'rotate(180deg)' : 'rotate(0deg)';
+    }
+
+    function updateBg(color) {
+        document.documentElement.style.setProperty('--bg-canvas', color);
+        PALETTE[0] = color;
+    }
+
+    /* --- Ant Logic --- */
+    function addAnt(ruleStr = 'RL', x = 0, y = 0, dir = 0, forcedId = null) {
+        if(simState.ants.length >= simState.maxAnts) return;
+        antCounter++;
+        let colors = Array.from({length: ruleStr.length}, (_, i) => PALETTE[(i+1) % PALETTE.length]);
+        const a = {
+            id: forcedId || `a-${antCounter}-${Date.now()}`,
+            x, y, dir, rule: ruleStr, colors, steps: 0, flips: 0, age: 0,
+            bodyColor: '#ffffff'
+        };
+        simState.ants.push(a);
+
+        if(simState.symmetry && !forcedId && simState.ants.length + 3 <= simState.maxAnts) {
+            // Spawn 3 more rotated around origin (0,0)
+            addAnt(ruleStr, -y, x, (dir+1)%4, a.id+'-s1');
+            addAnt(ruleStr, -x, -y, (dir+2)%4, a.id+'-s2');
+            addAnt(ruleStr, y, -x, (dir+3)%4, a.id+'-s3');
+        }
+        renderSidebar();
+    }
+
+    function removeAnt(id) { simState.ants = simState.ants.filter(a => a.id !== id); renderSidebar(); }
+
+    function addRandomAnt() {
+        const len = Math.floor(Math.random() * 6) + 2;
+        const chars = ['L', 'R', 'N', 'U'];
+        let r = ''; for(let i=0; i<len; i++) r += chars[Math.floor(Math.random()*chars.length)];
+        addAnt(r);
+    }
+
+    function modifyRule(input, antId) {
+        let v = input.value.toUpperCase().replace(/[^LRNU]/g, '');
+        if(!v) v = 'R'; input.value = v;
+        const ant = simState.ants.find(a => a.id === antId);
+        if(ant) {
+            ant.rule = v;
+            while(ant.colors.length < v.length) ant.colors.push(PALETTE[ant.colors.length % PALETTE.length]);
+            ant.colors = ant.colors.slice(0, v.length);
+        }
+    }
+
+    /* --- Core Engine --- */
+    function toggleSim() {
+        isRunning = !isRunning;
+        const btn = document.getElementById('btn-toggle');
+        btn.textContent = isRunning ? 'Halt' : 'Execute';
+        btn.style.backgroundColor = isRunning ? '#f59e0b' : '#2563eb';
+        if (isRunning) { lastTime = performance.now(); tickAcc = 0; if(audioCtx?.state === 'suspended') audioCtx.resume(); }
+    }
+
+    function stepSim() { if (!isRunning) { saveHistory(); tick(); } }
+    function undoSim() {
+        if (simState.history.length === 0) return;
+        const state = simState.history.pop();
+        simState.grid = state.grid;
+        simState.ants = state.ants;
+        currentTick = state.tick;
+        renderSidebar();
+    }
+
+    function saveHistory() {
+        if(simState.history.length > 50) simState.history.shift(); // ring buffer 50 states max
+        // Deep copy grid and ants
+        const snapGrid = new Map();
+        for(let [k,v] of simState.grid) snapGrid.set(k, {...v});
+        const snapAnts = simState.ants.map(a => ({...a, colors: [...a.colors]}));
+        simState.history.push({ grid: snapGrid, ants: snapAnts, tick: currentTick });
+    }
+
+    function clearGrid() { simState.grid.clear(); currentTick = 0; simState.history = []; }
+    function resetSim() {
+        if (isRunning) toggleSim();
+        clearGrid(); simState.ants.forEach(a => { a.x=0; a.y=0; a.dir=0; a.steps=0; a.flips=0; a.age=0; });
+        simState.portals = [];
+        simState.pan = {x: canvas.width/2, y: canvas.height/2};
+        renderSidebar();
+    }
+    
+    function updateSpeed(val) {
+        simState.speed = parseInt(val);
+        document.getElementById('speed-val').textContent = simState.speed.toLocaleString();
+    }
+
+    function setCameraMode(mode) { simState.cameraMode = mode; }
+    
+    function toggleAudio(checked) {
+        if(checked && !audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        else if(!checked && audioCtx) { audioCtx.suspend(); audioCtx = null; }
+    }
+
+    function playBeep(dir) {
+        if(!audioCtx || performance.now() - lastAudio < 40) return;
+        lastAudio = performance.now();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.frequency.value = 300 + (dir * 100);
+        gain.gain.setValueAtTime(0.01, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.05);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.05);
+    }
+
+    function placePortal() {
+        const bounds = getVisibleBounds();
+        const cx = Math.floor((bounds.startX + bounds.endX)/2);
+        const cy = Math.floor((bounds.startY + bounds.endY)/2);
+        simState.portals.push({ x1: cx-10, y1: cy, x2: cx+10, y2: cy });
+    }
+
+    /* --- Simulation Tick --- */
+    function mod(n, m) { return ((n % m) + m) % m; }
+
+    function tick() {
+        currentTick++;
+        tickCountFrame++;
+        let madeSound = false;
+
+        for (let i = simState.ants.length - 1; i >= 0; i--) {
+            const ant = simState.ants[i];
+            ant.age++; ant.steps++;
+
+            if(simState.lifespanEnabled && ant.age > simState.lifespan) {
+                simState.ants.splice(i, 1);
+                renderSidebar();
+                continue;
+            }
+
+            if(simState.mitosis && ant.age % simState.mitosisRate === 0 && simState.ants.length < simState.maxAnts) {
+                // Mitosis: clone with slight rotation
+                addAnt(ant.rule, ant.x, ant.y, (ant.dir+1)%4, null);
+            }
+
+            const k = `${ant.x},${ant.y}`;
+            let cell = simState.grid.get(k);
+            if (!cell) cell = { s: 0, c: PALETTE[0], t: currentTick, v: 0, w: false };
+            
+            if(cell.w) {
+                // Hit wall -> U turn
+                ant.dir = (ant.dir + 2) % 4;
+            } else {
+                cell.v++; ant.flips++;
+                const sIdx = cell.s % ant.rule.length;
+                const act = ant.rule[sIdx];
+                if (act === 'L') ant.dir = (ant.dir + 3) % 4;
+                else if (act === 'R') ant.dir = (ant.dir + 1) % 4;
+                else if (act === 'U') ant.dir = (ant.dir + 2) % 4;
+                
+                const nextS = (sIdx + 1) % ant.rule.length;
+                cell.s = nextS;
+                cell.c = ant.colors[nextS];
+                cell.t = currentTick;
+                simState.grid.set(k, cell);
+            }
+
+            // Move
+            if (ant.dir === 0) ant.y--; else if (ant.dir === 1) ant.x++;
+            else if (ant.dir === 2) ant.y++; else if (ant.dir === 3) ant.x--;
+
+            if (simState.torus) {
+                const ts = simState.torusSize;
+                const offset = Math.floor(ts/2);
+                ant.x = mod(ant.x + offset, ts) - offset;
+                ant.y = mod(ant.y + offset, ts) - offset;
+            }
+
+            // Portals
+            for(let p of simState.portals) {
+                if(ant.x === p.x1 && ant.y === p.y1) { ant.x = p.x2; ant.y = p.y2; break; }
+                else if(ant.x === p.x2 && ant.y === p.y2) { ant.x = p.x1; ant.y = p.y1; break; }
+            }
+
+            if(!madeSound) { playBeep(ant.dir); madeSound = true; }
+        }
+    }
+
+    function loop(ts) {
+        // FPS Calc
+        frameCount++;
+        if (ts - lastFpsTime >= 1000) {
+            document.getElementById('fps-val').innerText = frameCount;
+            document.getElementById('real-tps-val').innerText = tickCountFrame;
+            frameCount = 0; tickCountFrame = 0; lastFpsTime = ts;
+            // Update stats UI less frequently
+            updateStatsUI();
+        }
+
+        if (isRunning) {
+            const dt = ts - lastTime; lastTime = ts;
+            if (dt < 1000) {
+                const tpf = simState.speed / 1000 * dt;
+                tickAcc += tpf;
+                const ticks = Math.floor(tickAcc);
+                tickAcc -= ticks;
+                
+                // Only save history if going slow enough to matter, otherwise it lags
+                if(simState.speed < 10 && ticks > 0) saveHistory();
+
+                const limit = Math.min(ticks, 100000); // hard cap
+                for (let i = 0; i < limit; i++) tick();
+            }
+        }
+        
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    /* --- Rendering --- */
+    function getVisibleBounds() {
+        const sc = simState.cellSize * simState.zoom;
+        const startX = Math.floor(-simState.pan.x / sc);
+        const startY = Math.floor(-simState.pan.y / sc);
+        const endX = startX + Math.ceil(canvas.width / sc);
+        const endY = startY + Math.ceil(canvas.height / sc);
+        return {sc, startX, startY, endX, endY};
+    }
+
+    function draw() {
+        // Center of Mass Camera
+        if (simState.cameraMode === 'center' && simState.ants.length > 0) {
+            let avgX = 0, avgY = 0;
+            simState.ants.forEach(a => { avgX += a.x; avgY += a.y; });
+            avgX /= simState.ants.length; avgY /= simState.ants.length;
+            const sc = simState.cellSize * simState.zoom;
+            simState.pan.x += ((canvas.width/2 - avgX*sc) - simState.pan.x) * 0.1;
+            simState.pan.y += ((canvas.height/2 - avgY*sc) - simState.pan.y) * 0.1;
+        }
+
+        const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg-canvas').trim();
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const {sc, startX, startY, endX, endY} = getVisibleBounds();
+
+        // Draw Grid Cells
+        for (let [k, cell] of simState.grid.entries()) {
+            const [x, y] = k.split(',').map(Number);
+            if (x < startX || x > endX || y < startY || y > endY) continue;
+            
+            let alpha = 1.0;
+            if(simState.cellAging && cell.s !== 0 && !cell.w) {
+                const age = currentTick - cell.t;
+                alpha = Math.max(0, 1 - (age / 10000)); // fade over 10k ticks
+                if(alpha <= 0.05) { simState.grid.delete(k); continue; } // clear dead cells
+            }
+
+            const sx = Math.floor(x * sc + simState.pan.x);
+            const sy = Math.floor(y * sc + simState.pan.y);
+            const size = Math.ceil(sc);
+
+            if(cell.w) {
+                ctx.fillStyle = '#4b5563'; // Wall color
+                ctx.fillRect(sx, sy, size, size);
+            } else if (simState.heatmap) {
+                // Heatmap logic (blue -> red based on visits)
+                const intensity = Math.min(cell.v / 50, 1);
+                ctx.fillStyle = `hsl(${(1-intensity)*240}, 100%, 50%)`;
+                ctx.globalAlpha = 0.8;
+                ctx.fillRect(sx, sy, size, size);
+            } else if (cell.s !== 0) {
+                ctx.fillStyle = cell.c;
+                ctx.globalAlpha = alpha;
+                ctx.fillRect(sx, sy, size, size);
+            }
+            ctx.globalAlpha = 1.0;
+        }
+
+        // Draw Torus Bounds
+        if(simState.torus) {
+            ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.lineWidth = 2;
+            const ts = simState.torusSize, off = Math.floor(ts/2);
+            const bx = -off * sc + simState.pan.x, by = -off * sc + simState.pan.y;
+            ctx.strokeRect(bx, by, ts*sc, ts*sc);
+        }
+
+        // FPS Optimization: Disable expensive shadow glow when fast or zoomed out
+        const skipGlow = simState.speed > 500 || simState.zoom < 0.6; 
+
+        // Draw Portals
+        simState.portals.forEach(p => {
+            ctx.fillStyle = '#d946ef'; 
+            ctx.shadowBlur = skipGlow ? 0 : 10; 
+            ctx.shadowColor = '#d946ef';
+            const pulse = (Math.sin(Date.now()/200) + 1) / 2 * 0.5 + 0.5;
+            
+            [ {x: p.x1, y: p.y1}, {x: p.x2, y: p.y2} ].forEach(pos => {
+                if(pos.x < startX || pos.x > endX || pos.y < startY || pos.y > endY) return;
+                ctx.beginPath();
+                ctx.arc(pos.x*sc + simState.pan.x + sc/2, pos.y*sc + simState.pan.y + sc/2, (sc/2) * pulse, 0, Math.PI*2);
+                ctx.fill();
+            });
+            ctx.shadowBlur = 0;
+        });
+
+        // Draw Ants
+        simState.ants.forEach(ant => {
+            if(ant.x < startX-1 || ant.x > endX+1 || ant.y < startY-1 || ant.y > endY+1) return; // Spatial Culling
+            const sx = ant.x * sc + simState.pan.x;
+            const sy = ant.y * sc + simState.pan.y;
+            const c = ant.bodyColor || '#ffffff';
+            
+            ctx.save();
+            ctx.translate(sx + sc/2, sy + sc/2);
+            ctx.rotate(ant.dir * Math.PI/2);
+            ctx.fillStyle = c; 
+            ctx.shadowBlur = skipGlow ? 0 : 10; 
+            ctx.shadowColor = c;
+
+            if(simState.shape === 'drone') {
+                ctx.beginPath(); ctx.moveTo(0, -sc); ctx.lineTo(sc*0.6, sc*0.6); ctx.lineTo(0, sc*0.2); ctx.lineTo(-sc*0.6, sc*0.6); ctx.fill();
+            } else if (simState.shape === 'arrow') {
+                ctx.beginPath(); ctx.moveTo(0, -sc*0.8); ctx.lineTo(sc*0.8, sc*0.8); ctx.lineTo(-sc*0.8, sc*0.8); ctx.fill();
+            } else if (simState.shape === 'orb') {
+                ctx.beginPath(); ctx.arc(0,0, sc*0.7, 0, Math.PI*2); ctx.fill();
+            } else {
+                ctx.fillRect(-sc/2, -sc/2, sc, sc); // Classic
+            }
+            ctx.restore();
+        });
+    }
+
+    /* --- Mouse & Tools --- */
+    function setupEvents() {
+        let isDrag = false, lastM = {x:0, y:0};
+        const ttip = document.getElementById('coord-tooltip');
+        
+        // UI Drag
+        const uiWin = document.getElementById('ui-window'), uiHead = document.getElementById('ui-header');
+        let uiDrag = false, uiOff = {x:0, y:0};
+        uiHead.onmousedown = e => { if(e.target.closest('button'))return; uiDrag = true; uiOff.x = e.clientX-uiWin.offsetLeft; uiOff.y = e.clientY-uiWin.offsetTop; };
+        window.onmouseup = () => { uiDrag = false; isDrag = false; };
+        
+        canvas.oncontextmenu = e => e.preventDefault();
+
+        canvas.onmousedown = e => { isDrag = true; lastM = {x:e.clientX, y:e.clientY}; applyPaint(e); };
+        
+        window.onmousemove = e => {
+            if(uiDrag) { uiWin.style.left = `${e.clientX-uiOff.x}px`; uiWin.style.top = `${e.clientY-uiOff.y}px`; return; }
+            
+            // Tooltip
+            const sc = simState.cellSize * simState.zoom;
+            const gx = Math.floor((e.clientX - simState.pan.x)/sc);
+            const gy = Math.floor((e.clientY - simState.pan.y)/sc);
+            ttip.style.left = `${e.clientX}px`; ttip.style.top = `${e.clientY}px`;
+            ttip.innerText = `X: ${gx}, Y: ${gy}`;
+            ttip.style.display = 'block';
+
+            if(isDrag) {
+                if(simState.paintMode !== 'none') applyPaint(e);
+                else { simState.pan.x += e.clientX-lastM.x; simState.pan.y += e.clientY-lastM.y; simState.cameraMode = 'free'; document.getElementById('camera-mode').value = 'free'; }
+                lastM = {x:e.clientX, y:e.clientY};
+            }
+        };
+        canvas.onmouseleave = () => { isDrag = false; ttip.style.display = 'none'; };
+
+        canvas.onwheel = e => {
+            e.preventDefault();
+            const zf = 1.1; const old = simState.zoom;
+            simState.zoom = e.deltaY < 0 ? Math.min(50, old * zf) : Math.max(0.1, old / zf);
+            const r = simState.zoom / old;
+            simState.pan.x = e.clientX - (e.clientX - simState.pan.x) * r;
+            simState.pan.y = e.clientY - (e.clientY - simState.pan.y) * r;
+        };
+    }
+
+    function applyPaint(e) {
+        if(simState.paintMode === 'none') return;
+        const sc = simState.cellSize * simState.zoom;
+        const gx = Math.floor((e.clientX - simState.pan.x)/sc);
+        const gy = Math.floor((e.clientY - simState.pan.y)/sc);
+        const k = `${gx},${gy}`;
+        
+        if(e.button === 2) simState.grid.delete(k); // Erase
+        else {
+            if(simState.paintMode === 'wall') simState.grid.set(k, {s:1, c:'#000', t:currentTick, v:0, w:true});
+            else simState.grid.set(k, {s:1, c:(simState.ants[0]?.colors[1] || '#fff'), t:currentTick, v:1, w:false});
+        }
+    }
+
+    function zoomToFit() {
+        if(simState.ants.length === 0) return;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        simState.ants.forEach(a => {
+            if(a.x < minX) minX = a.x; if(a.y < minY) minY = a.y;
+            if(a.x > maxX) maxX = a.x; if(a.y > maxY) maxY = a.y;
+        });
+        const w = (maxX - minX + 10) * simState.cellSize;
+        const h = (maxY - minY + 10) * simState.cellSize;
+        const scale = Math.min(canvas.width/w, canvas.height/h);
+        simState.zoom = Math.max(0.1, Math.min(scale, 5));
+        const cx = (minX + maxX)/2 * simState.cellSize * simState.zoom;
+        const cy = (minY + maxY)/2 * simState.cellSize * simState.zoom;
+        simState.pan = { x: canvas.width/2 - cx, y: canvas.height/2 - cy };
+    }
+
+    /* --- Save/Load & Data --- */
+    function saveSlot(s) {
+        localStorage.setItem(`ant_save_${s}`, JSON.stringify({ants: simState.ants, bg: PALETTE[0]}));
+        alert(`Saved to Slot ${s}`);
+    }
+    function loadSlot(s) {
+        const d = localStorage.getItem(`ant_save_${s}`);
+        if(d) {
+            const p = JSON.parse(d); resetSim();
+            simState.ants = p.ants; if(p.bg) updateBg(p.bg);
+            renderSidebar();
+        } else alert(`Slot ${s} is empty.`);
+    }
+
+    function shareURL() {
+        const miniState = simState.ants.map(a => ({x:a.x, y:a.y, d:a.dir, r:a.rule, c:a.colors, bc:a.bodyColor}));
+        const enc = btoa(JSON.stringify(miniState));
+        window.history.replaceState(null, null, `#${enc}`);
+        navigator.clipboard.writeText(window.location.href);
+        alert("URL copied to clipboard!");
+    }
+    
+    function loadFromURL() {
+        try {
+            const dec = JSON.parse(atob(window.location.hash.substring(1)));
+            if(Array.isArray(dec)) {
+                simState.ants = dec.map((a,i) => ({ id:`a-${i}-${Date.now()}`, x:a.x, y:a.y, dir:a.d, rule:a.r, colors:a.c, steps:0, flips:0, age:0, bodyColor:a.bc||'#ffffff' }));
+                renderSidebar();
+            }
+        } catch(e) { console.error("Bad URL state", e); }
+        window.history.replaceState(null, null, ' ');
+    }
+
+    /* --- UI Updates --- */
+    function updateStatsUI() {
+        simState.ants.forEach(a => {
+            const stEl = document.getElementById(`stats-${a.id}`);
+            if(stEl) stEl.innerText = `Steps: ${a.steps.toLocaleString()} | Flips: ${a.flips.toLocaleString()}`;
+        });
+    }
+
+    function updateAntPos(id, axis, val) {
+        const ant = simState.ants.find(a => a.id === id);
+        if(ant) ant[axis] = parseInt(val) || 0;
+    }
+
+    function updateAntColor(id, val) {
+        const ant = simState.ants.find(a => a.id === id);
+        if(ant) ant.bodyColor = val;
+    }
+
+    function renderSidebar() {
+        const c = document.getElementById('ants-container');
+        if(!simState.ants.length) { c.innerHTML = '<div class="text-center text-xs text-gray-500 py-4 italic">No entities active.</div>'; return; }
+        
+        c.innerHTML = simState.ants.map((a, i) => `
+            <div class="glass-card p-2 rounded relative">
+                <div class="flex justify-between items-center mb-1">
+                    <span class="text-xs font-bold text-gray-200 flex items-center gap-2">
+                        Unit ${i+1}
+                        <input type="color" value="${a.bodyColor || '#ffffff'}" onchange="updateAntColor('${a.id}', this.value)" class="w-4 h-4 rounded cursor-pointer border-none bg-transparent p-0 shadow-sm" title="Ant Body Color">
+                    </span>
+                    <button onclick="removeAnt('${a.id}')" class="text-red-400 hover:text-red-300 text-[10px]">Remove</button>
+                </div>
+                <div class="flex gap-1 mb-1">
+                    <input type="text" value="${a.rule}" onchange="modifyRule(this, '${a.id}')" class="flex-1 w-full bg-black/40 text-blue-400 font-mono text-xs p-1 rounded border border-white/10 uppercase tracking-widest outline-none" title="Rule String">
+                    <input type="number" value="${a.x}" onchange="updateAntPos('${a.id}', 'x', this.value)" class="w-14 bg-black/40 text-white font-mono text-[10px] p-1 rounded border border-white/10 text-center outline-none" title="X Position">
+                    <input type="number" value="${a.y}" onchange="updateAntPos('${a.id}', 'y', this.value)" class="w-14 bg-black/40 text-white font-mono text-[10px] p-1 rounded border border-white/10 text-center outline-none" title="Y Position">
+                </div>
+                <div id="stats-${a.id}" class="text-[9px] text-gray-400 font-mono">Steps: ${a.steps} | Flips: ${a.flips}</div>
+            </div>
+        `).join('');
+    }
+
+    window.onload = init;
+</script>
+</body>
+</html>
